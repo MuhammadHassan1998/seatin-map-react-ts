@@ -1,164 +1,487 @@
-import React, { KeyboardEvent, useEffect, useRef, useState } from 'react';
-import { Seat, Section, Venue } from '@/types/venue.type';
+import { Seat, Venue } from '@/types/venue.type'
+import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react'
+import { PerformanceMonitor } from './PerformanceMonitor'
 
 interface VenueMapProps {
-    venueData: Venue;
-    selectedSeats: Seat[];
-    handleSeatClick: (seat: Seat) => void;
-    setSelectedSeatDetails: (seat: Seat) => void;
+  venueData: Venue
+  selectedSeats: Seat[]
+  handleSeatClick: (seat: Seat) => void
+  setSelectedSeatDetails: (seat: Seat) => void
+}
+
+interface Viewport {
+  x: number
+  y: number
+  scale: number
+  width: number
+  height: number
+}
+
+interface RenderStats {
+  totalSeats: number
+  renderedSeats: number
+  fps: number
+  renderTime: number
 }
 
 const VenueMap: React.FC<VenueMapProps> = ({
-    venueData,
-    selectedSeats,
-    handleSeatClick,
-    setSelectedSeatDetails
+  venueData,
+  selectedSeats,
+  handleSeatClick,
+  setSelectedSeatDetails
 }) => {
-    const [focusedSeatId, setFocusedSeatId] = useState<string | null>(null);
-    const seatRefs = useRef<{ [key: string]: SVGCircleElement }>({});
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const animationFrameRef = useRef<number>(null)
+  const lastTimeRef = useRef<number>(0)
 
-    useEffect(() => {
-        const firstAvailableSeat = Object.values(seatRefs.current).find(el => el?.ariaDisabled !== 'true');
-        if (firstAvailableSeat) {
-            firstAvailableSeat.focus();
-            setFocusedSeatId(firstAvailableSeat.getAttribute('data-id') || null);
+  const [viewport, setViewport] = useState<Viewport>({
+    x: 0,
+    y: 0,
+    scale: 1,
+    width: 0,
+    height: 0
+  })
+
+  const [isDragging, setIsDragging] = useState(false)
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
+  const [hoveredSeat, setHoveredSeat] = useState<Seat | null>(null)
+
+  const [stats, setStats] = useState<RenderStats>({
+    totalSeats: 0,
+    renderedSeats: 0,
+    fps: 0,
+    renderTime: 0
+  })
+
+  const seatData = useMemo(() => {
+    const seats: Array<{
+      seat: Seat
+      section: any
+      worldX: number
+      worldY: number
+      screenX: number
+      screenY: number
+    }> = []
+
+    venueData.sections.forEach(section => {
+      section.rows.forEach(row => {
+        row.seats.forEach(seat => {
+          const worldX = section.transform.x + seat.x * section.transform.scale
+          const worldY = section.transform.y + seat.y * section.transform.scale
+
+          seats.push({
+            seat,
+            section,
+            worldX,
+            worldY,
+            screenX: 0,
+            screenY: 0
+          })
+        })
+      })
+    })
+
+    return seats
+  }, [venueData])
+
+  useEffect(() => {
+    setStats(prev => ({ ...prev, totalSeats: seatData.length }))
+  }, [seatData.length])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const container = containerRef.current
+    if (!canvas || !container) return
+
+    const resizeCanvas = () => {
+      const rect = container.getBoundingClientRect()
+      const dpr = window.devicePixelRatio || 1
+
+      canvas.width = rect.width * dpr
+      canvas.height = rect.height * dpr
+      canvas.style.width = `${rect.width}px`
+      canvas.style.height = `${rect.height}px`
+
+      const ctx = canvas.getContext('2d')
+      if (ctx) {
+        ctx.scale(dpr, dpr)
+      }
+
+      setViewport(prev => ({
+        ...prev,
+        width: rect.width,
+        height: rect.height
+      }))
+    }
+
+    resizeCanvas()
+    window.addEventListener('resize', resizeCanvas)
+
+    return () => window.removeEventListener('resize', resizeCanvas)
+  }, [])
+
+  const worldToScreen = useCallback(
+    (worldX: number, worldY: number): [number, number] => {
+      const screenX =
+        (worldX - viewport.x) * viewport.scale + viewport.width / 2
+      const screenY =
+        (worldY - viewport.y) * viewport.scale + viewport.height / 2
+      return [screenX, screenY]
+    },
+    [viewport]
+  )
+
+  const screenToWorld = useCallback(
+    (screenX: number, screenY: number): [number, number] => {
+      const worldX =
+        (screenX - viewport.width / 2) / viewport.scale + viewport.x
+      const worldY =
+        (screenY - viewport.height / 2) / viewport.scale + viewport.y
+      return [worldX, worldY]
+    },
+    [viewport]
+  )
+
+  const getSeatColor = useCallback(
+    (seat: Seat, isSelected: boolean, isHovered: boolean) => {
+      if (isHovered) return '#3B82F6' 
+      if (isSelected) return '#1E40AF' 
+
+      switch (seat.status) {
+        case 'available':
+          return '#10B981' 
+        case 'reserved':
+          return '#F59E0B'
+        case 'sold':
+          return '#EF4444'
+        case 'held':
+          return '#F97316' 
+        default:
+      }
+    },
+    []
+  )
+
+  const getVisibleSeats = useCallback(() => {
+    const margin = 100 
+    const [minX, minY] = screenToWorld(-margin, -margin)
+    const [maxX, maxY] = screenToWorld(
+      viewport.width + margin,
+      viewport.height + margin
+    )
+
+    return seatData.filter(
+      ({ worldX, worldY }) =>
+        worldX >= minX && worldX <= maxX && worldY >= minY && worldY <= maxY
+    )
+  }, [seatData, viewport, screenToWorld])
+
+  const getSeatSize = useCallback((scale: number) => {
+    if (scale < 0.5) return 2 
+    if (scale < 1) return 4 
+    if (scale < 2) return 8
+    return 12
+  }, [])
+
+  const render = useCallback(
+    (timestamp: number) => {
+      const canvas = canvasRef.current
+      if (!canvas) return
+
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+
+      const startTime = performance.now()
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+      ctx.save()
+      ctx.translate(viewport.width / 2, viewport.height / 2)
+      ctx.scale(viewport.scale, viewport.scale)
+      ctx.translate(-viewport.x, -viewport.y)
+
+      const visibleSeats = getVisibleSeats()
+
+      const seatSize = getSeatSize(viewport.scale)
+      const shouldRenderLabels = viewport.scale > 1.5
+
+      visibleSeats.forEach(({ seat, worldX, worldY }) => {
+        const isSelected = selectedSeats.some(s => s.id === seat.id)
+        const isHovered = hoveredSeat?.id === seat.id
+
+        ctx.beginPath()
+        ctx.arc(worldX, worldY, seatSize, 0, 2 * Math.PI)
+        ctx.fillStyle = getSeatColor(seat, isSelected, isHovered)
+        ctx.fill()
+
+        if (isSelected || isHovered) {
+          ctx.strokeStyle = '#FFFFFF'
+          ctx.lineWidth = 2
+          ctx.stroke()
         }
-    }, [venueData]);
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-        if (!focusedSeatId) return;
-
-        const directionMapping: { [key: string]: { x: number, y: number } } = {
-            ArrowUp: { x: 0, y: -1 },
-            ArrowDown: { x: 0, y: 1 },
-            ArrowLeft: { x: -1, y: 0 },
-            ArrowRight: { x: 1, y: 0 },
-        };
-
-        if (directionMapping[event.key]) {
-            event.preventDefault();
-            const direction = directionMapping[event.key];
-
-            // Find current seat and section
-            const flatSeats = venueData.sections
-                .flatMap((section) => section.rows)
-                .flatMap((row) => row.seats);
-
-            const currentSeatIndex = flatSeats.findIndex((seat) => seat.id === focusedSeatId);
-
-            let nextSeat = null;
-
-            if (direction.y !== 0) {
-                const rowIndex = Math.floor(currentSeatIndex / venueData.sections[0].rows[0].seats.length);
-                const nextRowIndex = rowIndex + direction.y;
-
-                if (nextRowIndex >= 0 && nextRowIndex < venueData.sections[0].rows.length) {
-                    nextSeat = venueData.sections[0].rows[nextRowIndex].seats[currentSeatIndex % venueData.sections[0].rows[0].seats.length];
-                }
-            } else if (direction.x !== 0) {
-                const nextSeatIndex = currentSeatIndex + direction.x;
-                if (nextSeatIndex >= 0 && nextSeatIndex < flatSeats.length) {
-                    nextSeat = flatSeats[nextSeatIndex];
-                }
-            }
-
-            if (nextSeat) {
-                setFocusedSeatId(nextSeat.id);
-                seatRefs.current[nextSeat.id]?.focus();
-            }
+        if (shouldRenderLabels && seatSize > 6) {
+          ctx.fillStyle = '#000000'
+          ctx.font = `${Math.max(8, seatSize)}px Arial`
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
+          ctx.fillText(seat.id, worldX, worldY)
         }
+      })
 
-        if (event.key === 'Enter' || event.key === ' ') {
-            const seatToToggle = venueData.sections
-                .flatMap((section) => section.rows)
-                .flatMap((row) => row.seats)
-                .find((seat) => seat.id === focusedSeatId);
+      ctx.restore()
 
-            if (seatToToggle) {
-                console.log(`Toggling seat: ${seatToToggle.id}`);
-                handleSeatClick(seatToToggle);
-            }
-        }
-    };
+      const renderTime = performance.now() - startTime
+      const fps =
+        timestamp - lastTimeRef.current > 0
+          ? 1000 / (timestamp - lastTimeRef.current)
+          : 0
+      lastTimeRef.current = timestamp
 
-    const getSeatColor = (seat: Seat, isSelected: boolean) => {
-        if (isSelected) return 'fill-blue-600 hover:fill-blue-700';
+      setStats({
+        totalSeats: seatData.length,
+        renderedSeats: visibleSeats.length,
+        fps: Math.round(fps),
+        renderTime: Math.round(renderTime)
+      })
 
-        switch (seat.status) {
-            case 'available':
-                return 'fill-green-500 hover:fill-green-600';
-            case 'reserved':
-                return 'fill-yellow-500 hover:fill-yellow-600';
-            case 'sold':
-                return 'fill-red-500 hover:fill-red-600';
-            case 'held':
-                return 'fill-orange-500 hover:fill-orange-600';
-            default:
-                return 'fill-gray-500 hover:fill-gray-600';
-        }
-    };
+      animationFrameRef.current = requestAnimationFrame(render)
+    },
+    [
+      viewport,
+      seatData,
+      selectedSeats,
+      hoveredSeat,
+      getVisibleSeats,
+      getSeatSize,
+      getSeatColor
+    ]
+  )
 
-    return (
-        <div className="relative overflow-auto border border-gray-300 rounded-lg bg-white">
-            <svg
-                width={venueData.map.width}
-                height={venueData.map.height}
-                viewBox={`0 0 ${venueData.map.width} ${venueData.map.height}`}
-                className="w-full h-auto max-h-[70vh]"
-                role="application"
-                aria-label={`Interactive seating map for ${venueData.name}. Use Tab or arrow keys to navigate between seats, Enter or Space to select/deselect.`}
-            >
-                {venueData.sections.map((section: Section) =>
-                    section.rows.map((row) =>
-                        row.seats.map((seat: Seat) => {
-                            const isSelected = selectedSeats.some(s => s.id === seat.id);
-                            const transform = section.transform;
-                            const seatX = transform.x + seat.x * transform.scale;
-                            const seatY = transform.y + seat.y * transform.scale;
+  useEffect(() => {
+    animationFrameRef.current = requestAnimationFrame(render)
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current)
+      }
+    }
+  }, [render])
 
-                            return (
-                                <g key={seat.id}>
-                                    <circle
-                                        cx={seatX}
-                                        cy={seatY}
-                                        r="12"
-                                        className={`cursor-pointer transition-colors  focus:ring-4 focus:ring-blue-800 ${getSeatColor(seat, isSelected)} ${focusedSeatId === seat.id ? 'ring-4 ring-blue-500' : ''}`}
-                                        stroke={isSelected ? '#1e40af' : '#374151'}
-                                        strokeWidth={isSelected ? '3' : '1'}
-                                        onClick={() => handleSeatClick(seat)}
-                                        onFocus={() => setSelectedSeatDetails(seat)}
-                                        ref={(el) => {
-                                            if (el) {
-                                                seatRefs.current[seat.id] = el;
-                                            }
-                                        }}
-                                        tabIndex={0}
-                                        onKeyDown={handleKeyDown}
-                                        data-id={seat.id}
-                                        data-status={seat.status}
-                                        aria-label={`Seat ${seat.col}, Row ${row.index}, Section ${section.label}. Status: ${seat.status}. Price tier ${seat.priceTier}. ${seat.status === 'available'
-                                            ? (isSelected ? 'Currently selected. Press Enter or Space to deselect.' : 'Available for selection. Press Enter or Space to select.')
-                                            : 'Not available for selection.'}`}
-                                        aria-pressed={seat.status === 'available' ? isSelected : undefined}
-                                        aria-disabled={seat.status !== 'available'}
-                                        role="button"
-                                    />
-                                    <text
-                                        x={seatX}
-                                        y={seatY + 4}
-                                        textAnchor="middle"
-                                        className="text-xs fill-white pointer-events-none font-medium"
-                                    >
-                                        {seat.col}
-                                    </text>
-                                </g>
-                            );
-                        })
-                    )
-                )}
-            </svg>
-        </div>
-    );
-};
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    setIsDragging(true)
+    setDragStart({ x: e.clientX, y: e.clientY })
+  }, [])
 
-export default VenueMap;
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent) => {
+      if (!isDragging) return
+
+      const deltaX = e.clientX - dragStart.x
+      const deltaY = e.clientY - dragStart.y
+
+      setViewport(prev => ({
+        ...prev,
+        x: prev.x - deltaX / prev.scale,
+        y: prev.y - deltaY / prev.scale
+      }))
+
+      setDragStart({ x: e.clientX, y: e.clientY })
+    },
+    [isDragging, dragStart]
+  )
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false)
+  }, [])
+
+  const handleWheel = useCallback(
+    (e: React.WheelEvent) => {
+      e.preventDefault()
+
+      const rect = e.currentTarget.getBoundingClientRect()
+      const mouseX = e.clientX - rect.left
+      const mouseY = e.clientY - rect.top
+
+      const [worldX, worldY] = screenToWorld(mouseX, mouseY)
+
+      const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1
+      const newScale = Math.max(0.1, Math.min(5, viewport.scale * zoomFactor))
+
+      const scaleRatio = newScale / viewport.scale
+      const newX = worldX - (worldX - viewport.x) * scaleRatio
+      const newY = worldY - (worldY - viewport.y) * scaleRatio
+
+      setViewport(prev => ({
+        ...prev,
+        scale: newScale,
+        x: newX,
+        y: newY
+      }))
+    },
+    [viewport, screenToWorld]
+  )
+
+  const handleCanvasClick = useCallback(
+    (e: React.MouseEvent) => {
+      const rect = e.currentTarget.getBoundingClientRect()
+      const clickX = e.clientX - rect.left
+      const clickY = e.clientY - rect.top
+
+      const [worldX, worldY] = screenToWorld(clickX, clickY)
+
+      const clickedSeat = seatData.find(({ worldX: seatX, worldY: seatY }) => {
+        const distance = Math.sqrt(
+          (seatX - worldX) ** 2 + (seatY - worldY) ** 2
+        )
+        return distance <= getSeatSize(viewport.scale)
+      })
+
+      if (clickedSeat) {
+        handleSeatClick(clickedSeat.seat)
+        setSelectedSeatDetails(clickedSeat.seat)
+      }
+    },
+    [
+      seatData,
+      viewport,
+      screenToWorld,
+      getSeatSize,
+      handleSeatClick,
+      setSelectedSeatDetails
+    ]
+  )
+
+  const handleMouseMoveForHover = useCallback(
+    (e: React.MouseEvent) => {
+      if (isDragging) return
+
+      const rect = e.currentTarget.getBoundingClientRect()
+      const mouseX = e.clientX - rect.left
+      const mouseY = e.clientY - rect.top
+
+      const [worldX, worldY] = screenToWorld(mouseX, mouseY)
+
+      const hovered = seatData.find(({ worldX: seatX, worldY: seatY }) => {
+        const distance = Math.sqrt(
+          (seatX - worldX) ** 2 + (seatY - worldY) ** 2
+        )
+        return distance <= getSeatSize(viewport.scale)
+      })
+
+      setHoveredSeat(hovered?.seat || null)
+    },
+    [seatData, viewport, screenToWorld, getSeatSize, isDragging]
+  )
+
+  const resetView = useCallback(() => {
+    if (seatData.length === 0) return
+
+    const bounds = seatData.reduce(
+      (acc, { worldX, worldY }) => ({
+        minX: Math.min(acc.minX, worldX),
+        maxX: Math.max(acc.maxX, worldX),
+        minY: Math.min(acc.minY, worldY),
+        maxY: Math.max(acc.maxY, worldY)
+      }),
+      { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
+    )
+
+    const centerX = (bounds.minX + bounds.maxX) / 2
+    const centerY = (bounds.minY + bounds.maxY) / 2
+
+    const width = bounds.maxX - bounds.minX
+    const height = bounds.maxY - bounds.minY
+
+    const scale = Math.min(
+      (viewport.width - 200) / width,
+      (viewport.height - 200) / height
+    )
+
+    console.log('Venue bounds:', bounds)
+    console.log('Venue center:', { centerX, centerY })
+    console.log('Venue dimensions:', { width, height })
+    console.log('Calculated scale:', scale)
+
+    setViewport(prev => ({
+      ...prev,
+      x: centerX,
+      y: centerY,
+      scale: Math.min(scale, 1)
+    }))
+  }, [seatData, viewport.width, viewport.height])
+
+  useEffect(() => {
+    if (seatData.length > 0 && viewport.width > 0 && viewport.height > 0) {
+      resetView()
+    }
+  }, [seatData, viewport.width, viewport.height, resetView])
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      const panAmount = 100 / viewport.scale
+
+      switch (e.key) {
+        case 'ArrowUp':
+          setViewport(prev => ({ ...prev, y: prev.y - panAmount }))
+          break
+        case 'ArrowDown':
+          setViewport(prev => ({ ...prev, y: prev.y + panAmount }))
+          break
+        case 'ArrowLeft':
+          setViewport(prev => ({ ...prev, x: prev.x - panAmount }))
+          break
+        case 'ArrowRight':
+          setViewport(prev => ({ ...prev, x: prev.x + panAmount }))
+          break
+        case '0':
+          resetView()
+          break
+        case '+':
+        case '=':
+          setViewport(prev => ({
+            ...prev,
+            scale: Math.min(5, prev.scale * 1.2)
+          }))
+          break
+        case '-':
+          setViewport(prev => ({
+            ...prev,
+            scale: Math.max(0.1, prev.scale / 1.2)
+          }))
+          break
+      }
+    },
+    [viewport.scale, resetView]
+  )
+
+  return (
+    <div className='relative w-full h-full'>
+      <PerformanceMonitor stats={stats} />
+      <div
+        ref={containerRef}
+        className='relative w-full h-full border border-gray-300 rounded-lg bg-white overflow-hidden'
+      >
+        <canvas
+          ref={canvasRef}
+          className='w-full h-full cursor-grab active:cursor-grabbing'
+          onMouseDown={handleMouseDown}
+          onMouseMove={e => {
+            handleMouseMove(e)
+            handleMouseMoveForHover(e)
+          }}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+          onWheel={handleWheel}
+          onClick={handleCanvasClick}
+          onKeyDown={handleKeyDown}
+          tabIndex={0}
+          role='application'
+          aria-label='Interactive seating map for venue'
+        />
+      </div>
+    </div>
+  )
+}
+
+export default VenueMap

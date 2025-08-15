@@ -1,6 +1,5 @@
 const fs = require('fs');
 
-// Function to generate large venue data
 const generateLargeVenueData = (totalRows, seatsPerRow) => {
     const venue = {
         venueId: "arena-01",
@@ -38,8 +37,7 @@ const generateLargeVenueData = (totalRows, seatsPerRow) => {
     return venue;
 };
 
-// Example usage
-const largeData = generateLargeVenueData(15, 10);  // 150 rows, 100 seats per row
+const largeData = generateLargeVenueData(150, 100);
 
 // Save the generated data to a JSON file
 fs.writeFile('venueData.json', JSON.stringify(largeData, null, 2), (err) => {

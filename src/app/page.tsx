@@ -40,7 +40,9 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('selectedSeats', JSON.stringify(selectedSeats));
+    if (selectedSeats.length > 0) {
+      localStorage.setItem('selectedSeats', JSON.stringify(selectedSeats));
+    }
   }, [selectedSeats]);
 
   const handleSeatClick = (seat: Seat) => {
@@ -65,7 +67,6 @@ export default function Home() {
 
     setSelectedSeatDetails(seat);
   };
-
 
   const calculateSubtotal = () => {
     return selectedSeats.reduce((total, seat) => {
@@ -93,30 +94,39 @@ export default function Home() {
   }
 
   return (
-    <section className="flex flex-col min-h-screen bg-gray-50 p-4">
-      <div className="max-w-7xl mx-auto w-full">
-        <h1 className="text-4xl font-bold text-center text-gray-800 mb-6">
-          {venueData.name}
-        </h1>
-
-        <div className="flex flex-col lg:flex-row gap-6">
-          <div className="flex-1">
-            <VenueMap
-              venueData={venueData}
-              selectedSeats={selectedSeats}
-              handleSeatClick={handleSeatClick}
-              setSelectedSeatDetails={setSelectedSeatDetails}
-            />
+    <section className="flex flex-col min-h-screen bg-gray-50">
+      {/* Navigation Header */}
+      <nav className="bg-white shadow-sm border-b">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+          <div className="flex justify-between items-center">
+            <h1 className="text-2xl font-bold text-gray-900">
+              {venueData.name}
+            </h1>
           </div>
+        </div>
+      </nav>
 
-          <div className="lg:w-80 space-y-6">
-            <SeatDetails selectedSeatDetails={selectedSeatDetails} venueData={venueData} />
-            <SelectionSummary
-              selectedSeats={selectedSeats}
-              calculateSubtotal={calculateSubtotal}
-              setSelectedSeats={setSelectedSeats}
-            />
-            <Legend />
+      <div className="flex-1 p-4">
+        <div className="max-w-7xl mx-auto w-full">
+          <div className="flex flex-col lg:flex-row gap-6 h-[80vh]">
+            <div className="flex-1 h-full">
+              <VenueMap
+                venueData={venueData}
+                selectedSeats={selectedSeats}
+                handleSeatClick={handleSeatClick}
+                setSelectedSeatDetails={setSelectedSeatDetails}
+              />
+            </div>
+
+            <div className="lg:w-80 space-y-6">
+              <SeatDetails selectedSeatDetails={selectedSeatDetails} venueData={venueData} />
+              <SelectionSummary
+                selectedSeats={selectedSeats}
+                calculateSubtotal={calculateSubtotal}
+                setSelectedSeats={setSelectedSeats}
+              />
+              <Legend />
+            </div>
           </div>
         </div>
       </div>
